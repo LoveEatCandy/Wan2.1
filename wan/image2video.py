@@ -9,6 +9,8 @@ import types
 from contextlib import contextmanager
 from functools import partial
 
+from accelerate import init_empty_weights
+from accelerate.utils import set_module_tensor_to_device
 import numpy as np
 import torch
 import torch.cuda.amp as amp
@@ -24,7 +26,44 @@ from .modules.vae import WanVAE
 from .utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
                                get_sampling_sigmas, retrieve_timesteps)
 from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+from .utils.load import load_torch_file
 
+
+def init_model(model_path, device_id):
+    sd = load_torch_file(model_path, device=torch.device(f"cuda:{device_id}"), safe_load=True)
+    first_key = next(iter(sd))
+    if first_key.startswith("model.diffusion_model."):
+        new_sd = {}
+        for key, value in sd.items():
+            new_key = key.replace("model.diffusion_model.", "", 1)
+            new_sd[new_key] = value
+        sd = new_sd
+
+    dim = sd["patch_embedding.weight"].shape[0]
+    in_channels = sd["patch_embedding.weight"].shape[1]
+    ffn_dim = sd["blocks.0.ffn.0.bias"].shape[0]
+    model_type = "i2v" if in_channels == 36 else "t2v"
+    num_heads = 40 if dim == 5120 else 12
+    num_layers = 40 if dim == 5120 else 30
+
+    TRANSFORMER_CONFIG= {
+            "dim": dim,
+            "ffn_dim": ffn_dim,
+            "eps": 1e-06,
+            "freq_dim": 256,
+            "in_dim": in_channels,
+            "model_type": model_type,
+            "out_dim": 16,
+            "text_len": 512,
+            "num_heads": num_heads,
+            "num_layers": num_layers,
+        }
+
+    with init_empty_weights():
+        transformer = WanModel(**TRANSFORMER_CONFIG)
+    
+    del sd
+    return transformer
 
 class WanI2V:
 
@@ -96,7 +135,8 @@ class WanI2V:
             tokenizer_path=os.path.join(checkpoint_dir, config.clip_tokenizer))
 
         logging.info(f"Creating WanModel from {checkpoint_dir}")
-        self.model = WanModel.from_pretrained(checkpoint_dir)
+
+        self.model = init_model(os.path.join(checkpoint_dir, config.model_checkpoint), device_id)
         self.model.eval().requires_grad_(False)
 
         if t5_fsdp or dit_fsdp or use_usp:

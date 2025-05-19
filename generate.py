@@ -385,7 +385,7 @@ def generate(args):
                     tar_lang=args.prompt_extend_target_lang,
                     image=img,
                     seed=args.base_seed)
-                if prompt_output.status == False:
+                if prompt_output.status is False:
                     logging.info(
                         f"Extending prompt failed: {prompt_output.message}")
                     logging.info("Falling back to original prompt.")
